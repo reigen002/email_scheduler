@@ -3,12 +3,23 @@ import { config } from './index';
 
 let redisClient: Redis | null = null;
 
+function sanitizeRedisUrl(urlStr: string): string {
+  let cleaned = (urlStr || '').trim();
+  if (cleaned.startsWith('//')) {
+    cleaned = 'rediss:' + cleaned;
+  }
+  return cleaned;
+}
+
 export function getRedisClient(): Redis {
   if (!redisClient) {
-    redisClient = new Redis(config.REDIS_URL, {
+    const rawUrl = sanitizeRedisUrl(config.REDIS_URL);
+    const isTls = rawUrl.startsWith('rediss://') || rawUrl.includes('upstash.io');
+    redisClient = new Redis(rawUrl, {
       maxRetriesPerRequest: null, // Required by BullMQ
       enableReadyCheck: false,
       lazyConnect: false,
+      tls: isTls ? { rejectUnauthorized: false } : undefined,
     });
 
     redisClient.on('connect', () => {
@@ -32,9 +43,12 @@ export function getRedisClient(): Redis {
  * BullMQ recommends separate connections for queue and worker.
  */
 export function createRedisConnection(): Redis {
-  return new Redis(config.REDIS_URL, {
+  const rawUrl = sanitizeRedisUrl(config.REDIS_URL);
+  const isTls = rawUrl.startsWith('rediss://') || rawUrl.includes('upstash.io');
+  return new Redis(rawUrl, {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableReadyCheck: false,
+    tls: isTls ? { rejectUnauthorized: false } : undefined,
   });
 }
 
