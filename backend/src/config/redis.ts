@@ -4,9 +4,18 @@ import { config } from './index';
 let redisClient: Redis | null = null;
 
 function sanitizeRedisUrl(urlStr: string): string {
-  let cleaned = (urlStr || '').trim();
+  if (!urlStr) return 'redis://localhost:6379';
+  let cleaned = urlStr.trim().replace(/^["']|["']$/g, '');
+  if (cleaned.includes('-u ')) {
+    cleaned = cleaned.split('-u ').pop()!.trim();
+  }
+  cleaned = cleaned.replace(/^redis-cli\s+/, '');
   if (cleaned.startsWith('//')) {
     cleaned = 'rediss:' + cleaned;
+  } else if (cleaned.startsWith('redis://') && (cleaned.includes('upstash.io') || cleaned.includes('.cloud'))) {
+    cleaned = cleaned.replace('redis://', 'rediss://');
+  } else if (!cleaned.startsWith('redis://') && !cleaned.startsWith('rediss://')) {
+    cleaned = 'rediss://' + cleaned.replace(/^(rediss?:?\/*)?/, '');
   }
   return cleaned;
 }
