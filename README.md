@@ -22,7 +22,6 @@ git clone https://github.com/reigen002/email_scheduler.git
 cd email_scheduler
 npm --prefix backend ci
 npm --prefix frontend ci
-docker compose up -d --wait
 ```
 
 The repository contains both applications as ordinary folders; no submodule
@@ -70,9 +69,34 @@ The frontend needs:
 NEXT_PUBLIC_API_URL=http://localhost:3001
 ```
 
-Run these in separate terminals:
+Start the whole app from the repository root with **one command**:
+
+```powershell
+.\start.cmd
+```
+
+This starts PostgreSQL and Redis through Docker Compose, then starts the backend
+and frontend together in the current terminal. Open **http://localhost:3000**.
+Press **Ctrl+C** to stop both application servers (confirm `Y` if Windows asks
+to terminate the batch job); Docker services and their
+data stay available. To stop the infrastructure too, run `docker compose stop`.
+
+The Windows launcher finds Node.js on PATH or uses the existing Codex Node
+runtime. It runs the bundled PowerShell script without changing your machine's
+execution policy. On any platform with Node.js/npm installed, the equivalent is:
 
 ```sh
+npm run dev
+```
+
+Dependencies and environment files must already be configured as described
+above. Stop any previously running servers before using the launcher; it reports
+occupied ports instead of starting duplicate servers.
+
+For separate terminals (for example, to stop only the backend during a demo):
+
+```sh
+docker compose up -d --wait
 # Terminal 1: migrations, queue recovery, Express API, and BullMQ worker
 npm --prefix backend run dev
 
@@ -80,10 +104,15 @@ npm --prefix backend run dev
 npm --prefix frontend run dev
 ```
 
-Open **http://localhost:3000**. Register an email/password account to try the app
+Register an email/password account to try the app
 without Google Cloud configuration. Use an email address such as
 `reviewer@example.com`; Ethereal captures the messages rather than sending them
 to recipients. Health check: **http://localhost:3001/api/health**.
+
+Registration requires a full name of 2–100 characters, starting with a letter.
+Names may contain Unicode letters and combining marks, spaces, apostrophes,
+hyphens, and periods. Numeric names such as `2` or `John2` are rejected in both
+the form and API. Accepted names are trimmed before being stored.
 
 Production builds:
 
@@ -227,10 +256,13 @@ The integration checks use separate local ports and **never use your `.env`
 database, Redis, Google, or Ethereal credentials**. Only external Ethereal
 account discovery is replaced by a localhost SMTP fixture; actual delivery
 uses Nodemailer over TCP, and PostgreSQL, Redis, and BullMQ are real.
+Stop the app before running these checks so the launcher can use Next.js's
+development cache.
 
 ```sh
 docker compose -p email-scheduler-check -f docker-compose.test.yml up -d --wait
 npm --prefix backend test
+npm run test:dev
 npm --prefix frontend run lint
 npm --prefix frontend run build
 docker compose -p email-scheduler-check -f docker-compose.test.yml down
@@ -239,6 +271,9 @@ docker compose -p email-scheduler-check -f docker-compose.test.yml down
 Checks cover transient SMTP retries, hourly deferral and eventual delivery,
 minimum send spacing across campaigns, abrupt backend restart, recovery of a
 missing Redis job, and rejection of Google-account password takeover attempts.
+Registration checks cover invalid names and international names. The launcher
+check starts both servers on separate test ports and verifies that an unexpected
+backend exit also stops the frontend.
 
 ## Assumptions, shortcuts, and trade-offs
 

@@ -6,6 +6,7 @@ import { config } from '../config';
 import { queryOne } from '../config/database';
 import { generateToken, authenticateJWT } from '../middleware/auth';
 import { User } from '../types';
+import { z } from 'zod';
 
 const router = Router();
 const oauth2Client = new OAuth2Client(
@@ -182,6 +183,14 @@ router.post('/logout', authenticateJWT, (_req: Request, res: Response) => {
 // ─── Email / Password Auth ────────────────────────────────────────────────────
 
 const BCRYPT_ROUNDS = 12;
+const registrationNameSchema = z.string({
+  required_error: 'Full name is required.',
+  invalid_type_error: 'Full name must be text.',
+}).trim()
+  .min(2, 'Full name must be between 2 and 100 characters.')
+  .max(100, 'Full name must be between 2 and 100 characters.')
+  .regex(/^\p{L}[\p{L}\p{M} .'’\-]*$/u,
+    'Full name must start with a letter and contain only letters, spaces, apostrophes, hyphens or periods.');
 
 /**
  * POST /api/auth/register
@@ -195,6 +204,10 @@ router.post('/register', async (req: Request, res: Response) => {
   }
   if (!password || typeof password !== 'string' || password.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+  const parsedName = registrationNameSchema.safeParse(name);
+  if (!parsedName.success) {
+    return res.status(400).json({ error: parsedName.error.issues[0].message });
   }
 
   try {
@@ -214,7 +227,7 @@ router.post('/register', async (req: Request, res: Response) => {
       // Brand-new account
       const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const userId = uuidv4();
-      const displayName = name?.trim() || normalizedEmail.split('@')[0];
+      const displayName = parsedName.data;
       const created = await queryOne<User>(
         `INSERT INTO users (id, email, name, password_hash)
          VALUES ($1, $2, $3, $4) RETURNING *`,

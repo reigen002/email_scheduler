@@ -41,12 +41,23 @@ export default function LoginClient() {
       setError('Password must be at least 6 characters.');
       return;
     }
+    if (mode === 'register') {
+      const fullName = name.trim();
+      if (fullName.length < 2 || fullName.length > 100) {
+        setError('Full name must be between 2 and 100 characters.');
+        return;
+      }
+      if (!/^\p{L}[\p{L}\p{M} .'’\-]*$/u.test(fullName)) {
+        setError('Full name must start with a letter and contain only letters, spaces, apostrophes, hyphens or periods.');
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
       const body = mode === 'register'
-        ? { email, password, name: name.trim() || undefined }
+        ? { email, password, name: name.trim() }
         : { email, password };
 
       const { data } = await axios.post(`${API_URL}${endpoint}`, body);
@@ -120,8 +131,14 @@ export default function LoginClient() {
           {/* Name field (register only) */}
           {mode === 'register' && (
             <input
+              id="name-input"
               type="text"
-              placeholder="Full Name (optional)"
+              placeholder="Full Name"
+              aria-label="Full Name"
+              autoComplete="name"
+              required
+              minLength={2}
+              maxLength={100}
               value={name}
               onChange={e => setName(e.target.value)}
               style={{

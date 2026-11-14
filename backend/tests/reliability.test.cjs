@@ -127,6 +127,30 @@ test('submission reliability checks against real PostgreSQL, Redis, and SMTP', {
   assert.equal(response.status, 201);
   token = (await response.json()).token;
 
+  await t.test('registration rejects invalid names without creating an account', async () => {
+    for (const name of ['2', 'John2', '', '   ', 'A', '--', 'A'.repeat(101), 2, {}, undefined]) {
+      const email = `${randomUUID()}@example.test`;
+      const result = await request('/auth/register', { email, password: 'local-check-password', name });
+      assert.equal(result.status, 400, `Registration accepted invalid name: ${JSON.stringify(name)}`);
+      assert.equal(typeof (await result.json()).error, 'string');
+      assert.equal((await pool.query('SELECT id FROM users WHERE email=$1', [email])).rowCount, 0);
+    }
+  });
+
+  await t.test('registration accepts international names and stores the trimmed value', async () => {
+    for (const [name, expected] of [
+      ['  Ada Lovelace  ', 'Ada Lovelace'], ['José Álvarez', 'José Álvarez'],
+      ['Anne-Marie O’Neill', 'Anne-Marie O’Neill'], ['अमित कुमार', 'अमित कुमार'],
+      ['李 明', '李 明'], ['J. Smith', 'J. Smith'],
+    ]) {
+      const email = `${randomUUID()}@example.test`;
+      const result = await request('/auth/register', { email, password: 'local-check-password', name });
+      assert.equal(result.status, 201, `Registration rejected valid name: ${name}`);
+      assert.equal((await result.json()).user.name, expected);
+      assert.equal((await pool.query('SELECT name FROM users WHERE email=$1', [email])).rows[0].name, expected);
+    }
+  });
+
   await t.test('a temporary SMTP failure retries and is recorded as sent', async () => {
     const recipient = `${randomUUID()}@example.test`;
     failOnce.add(recipient);
@@ -193,7 +217,7 @@ test('submission reliability checks against real PostgreSQL, Redis, and SMTP', {
     await pool.query('INSERT INTO users (id,email,name) VALUES ($1,$2,$3)', [randomUUID(), email, 'Google user']);
     const login = await request('/auth/login', { email, password: 'attacker-password' });
     assert.equal(login.status, 401);
-    const register = await request('/auth/register', { email, password: 'attacker-password' });
+    const register = await request('/auth/register', { email, password: 'attacker-password', name: 'Google User' });
     assert.equal(register.status, 409);
     assert.equal((await pool.query('SELECT password_hash FROM users WHERE email=$1', [email])).rows[0].password_hash, null);
   });
