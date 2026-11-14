@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - '127.0.0.1:15433:5432'
+    environment:
+      POSTGRES_DB: email_scheduler_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test_password
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d email_scheduler_test']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '127.0.0.1:16379:6379'
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30

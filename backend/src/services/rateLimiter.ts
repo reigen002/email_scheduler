@@ -52,23 +52,24 @@ export async function checkAndIncrementRateLimit(
   const redis = getRedisClient();
   const key = getRateLimitKey(senderEmail);
 
-  // Atomic increment using a Lua script to ensure check-and-increment atomicity
+  // Check and increment together. Rejected sends never consume a slot.
   const luaScript = `
-    local current = redis.call('INCR', KEYS[1])
+    local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+    if current >= tonumber(ARGV[2]) then
+      return -1
+    end
+    current = redis.call('INCR', KEYS[1])
     if current == 1 then
       redis.call('EXPIRE', KEYS[1], ARGV[1])
     end
     return current
   `;
 
-  const count = (await redis.eval(luaScript, 1, key, RATE_LIMIT_TTL_SECONDS)) as number;
+  const count = (await redis.eval(luaScript, 1, key, RATE_LIMIT_TTL_SECONDS, maxPerHour)) as number;
 
-  if (count > maxPerHour) {
-    // Roll back the increment since we won't send this email now
-    await redis.decr(key);
-
+  if (count === -1) {
     const nextWindowMs = getNextHourWindowMs();
-    return { allowed: false, count: count - 1, nextWindowMs };
+    return { allowed: false, count: maxPerHour, nextWindowMs };
   }
 
   return { allowed: true, count };
@@ -80,10 +81,12 @@ export async function checkAndIncrementRateLimit(
 export async function decrementRateLimit(senderEmail: string): Promise<void> {
   const redis = getRedisClient();
   const key = getRateLimitKey(senderEmail);
-  const current = await redis.get(key);
-  if (current && parseInt(current, 10) > 0) {
-    await redis.decr(key);
-  }
+  await redis.eval(`
+    if tonumber(redis.call('GET', KEYS[1]) or '0') > 0 then
+      return redis.call('DECR', KEYS[1])
+    end
+    return 0
+  `, 1, key);
 }
 
 /**

@@ -3,13 +3,15 @@ import { createRedisConnection } from '../config/redis';
 import { EmailJobData } from '../types';
 
 let emailQueue: Queue<EmailJobData> | null = null;
+let queueConnection: ReturnType<typeof createRedisConnection> | null = null;
 
 export const EMAIL_QUEUE_NAME = 'email-delivery';
 
 export function getEmailQueue(): Queue<EmailJobData> {
   if (!emailQueue) {
+    queueConnection = createRedisConnection();
     emailQueue = new Queue<EmailJobData>(EMAIL_QUEUE_NAME, {
-      connection: createRedisConnection(),
+      connection: queueConnection,
       defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -74,5 +76,9 @@ export async function closeEmailQueue(): Promise<void> {
   if (emailQueue) {
     await emailQueue.close();
     emailQueue = null;
+  }
+  if (queueConnection) {
+    await queueConnection.quit();
+    queueConnection = null;
   }
 }

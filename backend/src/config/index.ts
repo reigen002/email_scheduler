@@ -24,11 +24,11 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('7d'),
 
   // BullMQ Worker Settings
-  WORKER_CONCURRENCY: z.coerce.number().default(5),
-  MIN_DELAY_BETWEEN_SENDS_MS: z.coerce.number().default(2000),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).default(5),
+  MIN_DELAY_BETWEEN_SENDS_MS: z.coerce.number().int().min(0).default(2000),
 
   // Rate Limiting
-  MAX_EMAILS_PER_HOUR_PER_SENDER: z.coerce.number().default(200),
+  MAX_EMAILS_PER_HOUR_PER_SENDER: z.coerce.number().int().min(1).default(200),
 
   // Frontend URL (for CORS)
   FRONTEND_URL: z.string().default('http://localhost:3000'),

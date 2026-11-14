@@ -5,11 +5,19 @@ let pool: Pool | null = null;
 
 export function getPool(): Pool {
   if (!pool) {
+    const isProduction = process.env.NODE_ENV === 'production';
+    const isCloudDb = config.DATABASE_URL.includes('sslmode=require') ||
+      config.DATABASE_URL.includes('neon.tech') ||
+      config.DATABASE_URL.includes('render.com') ||
+      config.DATABASE_URL.includes('supabase') ||
+      config.DATABASE_URL.includes('cockroach');
+
     pool = new Pool({
       connectionString: config.DATABASE_URL,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
+      ssl: isProduction || isCloudDb ? { rejectUnauthorized: false } : undefined,
     });
 
     pool.on('connect', () => {

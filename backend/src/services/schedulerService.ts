@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { withTransaction } from '../config/database';
+import { getPool, withTransaction } from '../config/database';
 import { scheduleEmailJob } from '../queues/emailQueue';
 import type { PoolClient } from 'pg';
 import type {
@@ -52,7 +52,7 @@ export async function scheduleEmailCampaign(
       ]
     );
 
-    // 2. Insert email_jobs + enqueue BullMQ jobs
+    // 2. Insert every pending row; queue publication follows the commit.
     for (let i = 0; i < recipients.length; i++) {
       const emailJobId = uuidv4();
       const recipient = recipients[i];
@@ -81,24 +81,13 @@ export async function scheduleEmailCampaign(
         ]
       );
 
-      // Enqueue in BullMQ
-      await scheduleEmailJob(
-        {
-          emailJobId,
-          campaignId,
-          userId,
-          recipientEmail: recipient,
-          senderEmail: request.sender_email,
-          senderName: request.sender_name ?? null,
-          subject: request.subject,
-          body: request.body,
-          scheduledAt: jobScheduledAt.toISOString(),
-          attachments: request.attachments,
-        },
-        jobScheduledAt,
-        emailJobId
-      );
     }
+  });
+
+  // Commit before publishing work. PostgreSQL is the durable outbox;
+  // a Redis outage is repaired without losing an accepted request.
+  await recoverPendingEmails(campaignId).catch(error => {
+    console.error('Campaign saved; queue recovery will retry publishing:', error.message);
   });
 
   return {
@@ -106,6 +95,22 @@ export async function scheduleEmailCampaign(
     total_jobs: recipients.length,
     message: `Scheduled ${recipients.length} email(s) for campaign ${campaignId}`,
   };
+}
+
+export async function recoverPendingEmails(campaignId?: string): Promise<void> {
+  const { rows } = await getPool().query<EmailJob>(
+    `SELECT * FROM email_jobs WHERE status IN ('scheduled', 'processing')
+     ${campaignId ? 'AND campaign_id = $1' : ''} ORDER BY scheduled_at`,
+    campaignId ? [campaignId] : []
+  );
+  for (const row of rows) {
+    await scheduleEmailJob({
+      emailJobId: row.id, campaignId: row.campaign_id, userId: row.user_id,
+      recipientEmail: row.recipient_email, senderEmail: row.sender_email,
+      senderName: row.sender_name, subject: row.subject, body: row.body,
+      scheduledAt: row.scheduled_at.toISOString(), attachments: row.attachments,
+    }, row.scheduled_at, row.bull_job_id ?? row.id);
+  }
 }
 
 /**

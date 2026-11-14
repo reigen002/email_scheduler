@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-11-14T08:31:25.941Z",
+  "transport": "real Ethereal SMTP",
+  "backendOfflineConfirmed": true,
+  "scheduledRecipients": 3,
+  "sentAfterRestart": 2,
+  "deferredByRateLimit": 1,
+  "persistedPreviewUrls": 2,
+  "browserErrors": [],
+  "durationSeconds": 130.92,
+  "videoBytes": 4948946
+}

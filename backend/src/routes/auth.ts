@@ -3,7 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
-import { query, queryOne } from '../config/database';
+import { queryOne } from '../config/database';
 import { generateToken, authenticateJWT } from '../middleware/auth';
 import { User } from '../types';
 
@@ -207,21 +207,9 @@ router.post('/register', async (req: Request, res: Response) => {
     let user: User;
 
     if (existing) {
-      if (existing.password_hash) {
-        // Full account already exists — just tell them to log in
-        return res.status(409).json({
-          error: 'An account with this email already exists. Please log in instead.',
-        });
-      }
-      // Google-only account — set a password so they can also use email/password
-      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-      const updated = await queryOne<User>(
-        `UPDATE users SET password_hash = $1, updated_at = NOW()
-         WHERE id = $2 RETURNING *`,
-        [passwordHash, existing.id]
-      );
-      if (!updated) throw new Error('Failed to set password');
-      user = updated;
+      return res.status(409).json({
+        error: 'An account with this email already exists. Please use its existing login method.',
+      });
     } else {
       // Brand-new account
       const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -243,7 +231,7 @@ router.post('/register', async (req: Request, res: Response) => {
       avatarUrl: user.avatar_url,
     });
 
-    return res.status(existing ? 200 : 201).json({
+    return res.status(201).json({
       token,
       user: { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatar_url },
     });
@@ -280,13 +268,7 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     if (!user.password_hash) {
-      // Google-only account — first email/password attempt sets the local password automatically
-      const passwordHash = await bcrypt.hash(pwd, BCRYPT_ROUNDS);
-      await query(
-        `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`,
-        [passwordHash, user.id]
-      );
-      // Fall through to issue token below
+      return res.status(401).json({ error: 'Please sign in with Google for this account.' });
     } else {
       const valid = await bcrypt.compare(pwd, user.password_hash);
       if (!valid) {

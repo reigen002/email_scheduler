@@ -30,3 +30,8 @@ Thumbs.db
 # Docker volumes
 postgres_data/
 redis_data/
+
+# Local verification and preserved nested repository history
+.submission-backup/
+tmp/
+*.tsbuildinfo

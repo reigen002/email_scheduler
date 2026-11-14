@@ -2,12 +2,13 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { config } from './config';
 import { getPool } from './config/database';
-import { getRedisClient } from './config/redis';
+import { getRedisClient, closeRedisClient } from './config/redis';
 import { runMigrations } from './db/migrations';
 import { startEmailWorker, stopEmailWorker } from './queues/emailWorker';
 import { closeEmailQueue } from './queues/emailQueue';
 import authRouter from './routes/auth';
 import emailsRouter from './routes/emails';
+import { recoverPendingEmails } from './services/schedulerService';
 
 const app = express();
 
@@ -88,6 +89,16 @@ async function bootstrap(): Promise<void> {
   const redis = getRedisClient();
   await redis.ping();
 
+  await recoverPendingEmails();
+  let recovering = false;
+  const recoveryTimer = setInterval(async () => {
+    if (recovering) return;
+    recovering = true;
+    try { await recoverPendingEmails(); }
+    catch (error) { console.error('Queue recovery failed:', error); }
+    finally { recovering = false; }
+  }, 30000);
+
   // 3. Start BullMQ worker
   console.log('⚡ Starting BullMQ worker...');
   startEmailWorker();
@@ -105,11 +116,13 @@ async function bootstrap(): Promise<void> {
   // ─── Graceful Shutdown ────────────────────────────────────────────────────
   const shutdown = async (signal: string) => {
     console.log(`\n⚠️  Received ${signal}. Shutting down gracefully...`);
+    clearInterval(recoveryTimer);
 
     server.close(async () => {
       console.log('  HTTP server closed');
       await stopEmailWorker();
       await closeEmailQueue();
+      await closeRedisClient();
       await getPool().end();
       console.log('✅ Graceful shutdown complete');
       process.exit(0);

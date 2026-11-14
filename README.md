@@ -1,343 +1,267 @@
-# 📧 Email Scheduler Service
+# Email Scheduler
 
-A production-grade email scheduling platform built with **Express.js + BullMQ + Redis + PostgreSQL** on the backend and **Next.js + Tailwind CSS** on the frontend.
+An assignment application with an Express + TypeScript API, BullMQ workers,
+Redis, PostgreSQL, and a Next.js 16 + React 19 dashboard. Ethereal captures test
+emails without delivering them to real inboxes.
 
----
+## Demo
 
-## 🗂️ Project Structure
+[Watch the submission demo](docs/demo.webm) (2 minutes 11 seconds).
+It shows composing scheduled emails, the Scheduled and Sent dashboard views,
+and stopping/restarting the backend before future emails are delivered.
+See [the demo walkthrough](docs/DEMO.md) for reproduction steps.
 
-```
-email_service_scheduler/
-├── backend/             # Express.js API + BullMQ worker
-│   ├── src/
-│   │   ├── config/      # Redis, DB, env config
-│   │   ├── db/          # Migrations
-│   │   ├── queues/      # BullMQ queue + worker
-│   │   ├── routes/      # Auth + Email API routes
-│   │   ├── services/    # Rate limiter, email sender, scheduler
-│   │   ├── middleware/  # JWT auth
-│   │   └── types/       # Shared TypeScript types
-│   ├── .env.example
-│   └── package.json
-├── frontend/            # Next.js 14 dashboard
-│   ├── src/
-│   │   ├── app/         # Next.js App Router pages
-│   │   ├── components/  # Reusable UI components
-│   │   ├── hooks/       # useAuth, useEmails
-│   │   ├── lib/         # API client
-│   │   └── types/       # TypeScript interfaces
-│   └── package.json
-├── docker-compose.yml   # Redis + PostgreSQL
-└── README.md
+## Run locally
+
+Prerequisites: **Node.js 20.9+**, npm, Docker Desktop / Docker Engine, and the
+Docker Compose plugin (`docker compose`). Internet access is needed for npm
+installation, Google Fonts during the frontend build, and Ethereal SMTP.
+
+```sh
+git clone https://github.com/reigen002/email_scheduler.git
+cd email_scheduler
+npm --prefix backend ci
+npm --prefix frontend ci
+docker compose up -d --wait
 ```
 
----
+The repository contains both applications as ordinary folders; no submodule
+initialization is needed. PostgreSQL is exposed on **localhost:5433** and Redis
+on **localhost:6379**. Both use named Docker volumes. Start Docker Desktop first
+on Windows.
 
-## ⚡ Quick Start
+Copy the environment templates:
 
-### Prerequisites
-- Node.js 18+
-- Docker & Docker Compose
-- A Google Cloud project with OAuth 2.0 credentials
-
-### 1. Clone and install
-
-```bash
-# Install backend dependencies
-cd backend && npm install
-
-# Install frontend dependencies
-cd ../frontend && npm install
-```
-
-### 2. Start infrastructure (Redis + PostgreSQL)
-
-```bash
-# From the project root
-docker-compose up -d
-```
-
-This starts:
-- **Redis** on port `6379` (with AOF persistence)
-- **PostgreSQL** on port `5432` (database: `email_scheduler`)
-
-### 3. Configure environment variables
-
-**Backend:**
-```bash
+```sh
 cp backend/.env.example backend/.env
-```
-
-Edit `backend/.env`:
-```env
-DATABASE_URL=postgresql://postgres:password@localhost:5432/email_scheduler
-REDIS_URL=redis://localhost:6379
-GOOGLE_CLIENT_ID=your_google_client_id
-GOOGLE_CLIENT_SECRET=your_google_client_secret
-GOOGLE_CALLBACK_URL=http://localhost:3001/api/auth/google/callback
-JWT_SECRET=your_random_64_char_secret
-WORKER_CONCURRENCY=5
-MIN_DELAY_BETWEEN_SENDS_MS=2000
-MAX_EMAILS_PER_HOUR_PER_SENDER=200
-FRONTEND_URL=http://localhost:3000
-```
-
-**Frontend:**
-```bash
 cp frontend/.env.local.example frontend/.env.local
 ```
 
-Edit `frontend/.env.local`:
-```env
+PowerShell equivalents:
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+Copy-Item frontend/.env.local.example frontend/.env.local
+```
+
+Set a fresh `JWT_SECRET` in `backend/.env`; generate one with:
+
+```sh
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+The local backend configuration is:
+
+```dotenv
+PORT=3001
+DATABASE_URL=postgresql://postgres:password@localhost:5433/email_scheduler
+REDIS_URL=redis://localhost:6379
+JWT_SECRET=replace_with_the_generated_secret
+JWT_EXPIRES_IN=7d
+FRONTEND_URL=http://localhost:3000
+WORKER_CONCURRENCY=5
+MIN_DELAY_BETWEEN_SENDS_MS=2000
+MAX_EMAILS_PER_HOUR_PER_SENDER=200
+```
+
+The frontend needs:
+
+```dotenv
 NEXT_PUBLIC_API_URL=http://localhost:3001
-NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_google_client_id
 ```
 
-### 4. Set up Google OAuth
+Run these in separate terminals:
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or use existing)
-3. Enable **Google Identity** API
-4. Navigate to **APIs & Services → Credentials**
-5. Create **OAuth 2.0 Client ID** (Web Application)
-6. Add **Authorized JavaScript origins**: `http://localhost:3000`
-7. Add **Authorized redirect URIs**: `http://localhost:3001/api/auth/google/callback`
-8. Copy the **Client ID** and **Client Secret** to your `.env` files
+```sh
+# Terminal 1: migrations, queue recovery, Express API, and BullMQ worker
+npm --prefix backend run dev
 
-### 5. Start the backend
-
-```bash
-cd backend
-npm run dev
+# Terminal 2: Next.js dashboard
+npm --prefix frontend run dev
 ```
 
-On first start:
-- Database migrations run automatically
-- Ethereal Email test account is created (credentials logged to console)
-- BullMQ worker starts and connects to Redis
+Open **http://localhost:3000**. Register an email/password account to try the app
+without Google Cloud configuration. Use an email address such as
+`reviewer@example.com`; Ethereal captures the messages rather than sending them
+to recipients. Health check: **http://localhost:3001/api/health**.
 
-### 6. Start the frontend
+Production builds:
 
-```bash
-cd frontend
-npm run dev
+```sh
+npm --prefix backend run build
+npm --prefix frontend run build
+npm --prefix backend start
+# In another terminal:
+npm --prefix frontend start
 ```
 
-Visit **http://localhost:3000** → sign in with Google → start scheduling emails!
+### Google login (optional alternative)
 
----
+1. Create a Google Cloud project and configure its OAuth consent screen.
+2. Create an OAuth 2.0 client of type **Web application**.
+3. Add JavaScript origin `http://localhost:3000` and redirect URI
+   `http://localhost:3001/api/auth/google/callback`.
+4. For an app in testing, add your Google account as a test user.
+5. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in
+   `backend/.env`, then restart the backend.
 
-## 🏗️ Architecture Overview
+Use **Login with Google**. Google-only accounts cannot acquire a password via
+the unauthenticated registration/login endpoints. Automatic linking between
+local and Google accounts is intentionally not implemented; use different email
+addresses when testing both login methods.
 
-### How Scheduling Works
+### Ethereal Email setup
 
-```
-User → POST /api/emails/schedule
-    → Validate request
-    → BEGIN PostgreSQL transaction
-       → INSERT email_campaigns row
-       → For each recipient:
-          → INSERT email_jobs row (status: 'scheduled')
-          → scheduleEmailJob(jobData, scheduledAt, emailJobId)
-             → BullMQ.add(data, { jobId: emailJobId, delay: ms_until_send })
-    → COMMIT
-    → Return { campaign_id, total_jobs }
+No SMTP credentials are required. On the **first email sent by each backend
+process**, `nodemailer.createTestAccount()` creates an Ethereal account and the
+transporter connects to its SMTP server. Account details and message preview
+URLs are logged by the backend. Each sent row stores its preview URL; select
+**Preview** in the dashboard to inspect the captured message.
 
-At scheduled time:
-BullMQ Worker picks up job
-    → Redis SET NX idempotency check (skip if already processed)
-    → Redis INCR rate limit check (reschedule if hourly limit exceeded)
-    → UPDATE email_jobs SET status='processing'
-    → Send via Ethereal SMTP (nodemailer)
-    → Sleep MIN_DELAY_BETWEEN_SENDS_MS
-    → UPDATE email_jobs SET status='sent', preview_url=...
-    → Check if campaign is fully complete → UPDATE status='completed'
-```
+Ethereal needs outbound HTTPS and SMTP access (normally port 587). If a network
+blocks SMTP, sends retry with backoff and eventually appear as failed. Real
+recipient inbox delivery is outside this assignment's test-email workflow.
 
-### Persistence on Restart
+## Architecture
 
-BullMQ stores all jobs (including delayed future jobs) **in Redis** with full state. Redis is configured with:
-- **AOF persistence** (`appendonly yes`) — every write is durably logged
-- **RDB snapshots** (`save 60 1`) — snapshot every 60s if 1+ key changed
-
-**What happens on restart:**
-1. Backend starts → connects to Redis → BullMQ worker connects
-2. BullMQ automatically resumes all previously scheduled jobs from Redis
-3. Future delayed jobs fire at the correct originally-scheduled time
-4. No manual re-queuing needed — PostgreSQL and Redis are the source of truth
-
-**Why emails are not duplicated:**
-- Each BullMQ job uses `emailJobId` (UUID) as the BullMQ `jobId`
-- BullMQ rejects duplicate job IDs by default
-- Additionally, a **Redis SET NX** idempotency key (`processed:{emailJobId}`) is checked at the start of each job — if it already exists, the job is silently skipped
-
-### Rate Limiting & Concurrency
-
-#### Per-Sender Hourly Rate Limit
-
-```
-Redis key: rate_limit:{sender_email}:{YYYY-MM-DD-HH}
-TTL: 2 hours (auto-cleanup)
+```text
+Next.js dashboard -> JWT-authenticated Express API
+  -> PostgreSQL transaction: campaign + one pending record per recipient
+  -> commit -> BullMQ delayed jobs in Redis
+  -> worker -> shared Redis quota -> Ethereal SMTP
+  -> PostgreSQL delivery status + preview URL -> dashboard polling
 ```
 
-**Implementation:**
-1. On each job: Lua script atomically `INCR` the key and `EXPIRE` (if new)
-2. If `count > MAX_EMAILS_PER_HOUR_PER_SENDER`:
-   - `DECR` the counter (roll back the increment)
-   - Delete the idempotency lock (so the rescheduled job can claim it)
-   - Re-enqueue the job to `nextHourWindowStart + 1s` buffer via BullMQ
-   - Update `email_jobs.scheduled_at` to reflect new time
-   - Throw `UnrecoverableError` so BullMQ doesn't auto-retry this instance
+### Scheduling
 
-**Safety:** Uses Redis atomic Lua script — safe across multiple workers/instances. No in-memory state.
+`POST /api/emails/schedule` accepts a subject, HTML body, recipients, sender,
+UTC/offset-aware `scheduled_at`, `delay_between_emails_ms`, and `hourly_limit`.
+Recipients can also come from a CSV/TXT upload. Duplicates are removed. Each
+recipient gets a UUID and a scheduled time of `start + index * delay`.
 
-**No email is dropped:** Rate-limited jobs are simply delayed, not failed.
+The API commits the database transaction **before** publishing work to Redis.
+The persisted pending records act as a simple outbox. Each queue job uses its
+database job ID, so republishing the same pending record does not create a
+second BullMQ job. No cron jobs or in-memory scheduling timers are used.
 
-#### Worker Concurrency
+### Persistence and restart recovery
 
-```env
-WORKER_CONCURRENCY=5   # processes 5 jobs in parallel
-```
+- Redis uses AOF, periodic snapshots, and a named volume. PostgreSQL has its own
+  named volume. `docker compose down` keeps these; `down -v` deletes the data.
+- Future jobs remain in Redis while the backend is stopped. BullMQ resumes them
+  when a worker reconnects; overdue emails run when service becomes available.
+- On startup and every 30 seconds, pending database records are republished with
+  stable job IDs. This repairs a crash between database commit and queue insert,
+  and can rebuild missing queue entries from PostgreSQL.
+- BullMQ's active-job lock coordinates workers. The worker checks persisted
+  status and skips sent, cancelled, failed, or deleted records.
+- A failed SMTP attempt keeps the record pending until retries are exhausted;
+  it does not leave behind a premature "processed" marker.
 
-Each job also sleeps `MIN_DELAY_BETWEEN_SENDS_MS` (default: 2s) after sending to simulate provider throttling. This is both in the worker logic and enforced at the BullMQ limiter level.
+### Rate limiting and concurrency
 
-#### Behavior Under 1000+ Emails at the Same Time
+- A Redis Lua script atomically checks and reserves a slot under
+  `rate_limit:{sender}:{UTC-date-hour}`. The quota is shared across workers and
+  campaigns using that sender. The effective limit for each job is the smaller
+  of its campaign's `hourly_limit` and `MAX_EMAILS_PER_HOUR_PER_SENDER`.
+- When the quota is exhausted, the worker moves the **same** BullMQ job to the
+  next UTC hour plus one second. The row stays `scheduled`; normal deferral
+  consumes no retry attempt and is not reported as a failed delivery.
+- `WORKER_CONCURRENCY` controls how many jobs a worker can have active.
+  A queue-wide BullMQ limiter permits one new job start per
+  `MIN_DELAY_BETWEEN_SENDS_MS`, including across worker instances. SMTP calls may
+  overlap, but increasing concurrency cannot create an immediate send burst.
+- `delay_between_emails_ms` additionally staggers recipients in a campaign.
+  Failed SMTP attempts release their hourly quota reservation.
 
-1. BullMQ processes `WORKER_CONCURRENCY` jobs at once
-2. The rate limiter allows `MAX_EMAILS_PER_HOUR_PER_SENDER` sends per hour per sender
-3. When the hourly limit is hit, excess jobs are delayed to the next hour window
-4. BullMQ maintains order within each hour window (FIFO for delayed jobs at the same timestamp)
-5. No emails are dropped — they all eventually send, just spread across hour windows
+## Implemented features
 
----
+| Area | Features |
+| --- | --- |
+| Backend scheduler | BullMQ delayed jobs; per-recipient staggering; JSON and CSV/TXT recipients; attachments |
+| Backend persistence | PostgreSQL records; Redis AOF/volumes; startup and periodic queue recovery |
+| Backend rate limiting | Shared atomic per-sender UTC-hour quota; campaign limit; next-window deferral |
+| Backend concurrency | Configurable active jobs; shared minimum start interval; retry backoff |
+| Backend auth | Email/password registration/login, Google OAuth, JWT-protected API |
+| Frontend login | Registration, password login, Google login, protected dashboard, logout |
+| Frontend dashboard | Scheduled/Sent views, recipient/subject/time rows, search, date filters, pagination, refresh |
+| Frontend compose | Manual recipients, CSV upload, rich text, attachments, date/time scheduling, quota/delay controls |
+| Frontend delivery | Cancel scheduled emails; message details; deletion; Ethereal preview links; 30-second polling |
 
-## 📮 Ethereal Email Setup
+## API
 
-**No manual setup needed!** On first start, the backend automatically:
+All email endpoints and `/api/auth/me` require `Authorization: Bearer <token>`.
 
-1. Calls `nodemailer.createTestAccount()` — gets a free Ethereal test account
-2. Creates a nodemailer transporter using Ethereal's SMTP server
-3. Logs the credentials to the console:
-   ```
-   📧 Ethereal Email test account created:
-      User: abc123@ethereal.email
-      Pass: xxxxxxxxxx
-      Web:  https://ethereal.email
-   ```
-4. After each email is sent, logs a **preview URL**:
-   ```
-   📨 Email sent to recipient@example.com [job-id-here]
-      Preview: https://ethereal.email/message/xxxxx
-   ```
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| POST | `/api/auth/register`, `/api/auth/login` | Email/password auth |
+| GET | `/api/auth/google`, `/api/auth/google/callback` | Google OAuth redirect flow |
+| POST | `/api/auth/google/token` | Google ID token exchange |
+| GET | `/api/auth/me` | Current profile |
+| POST | `/api/auth/logout` | Client logout |
+| POST | `/api/emails/schedule` | Create a campaign |
+| POST | `/api/emails/parse-csv` | Preview recipients from upload |
+| GET | `/api/emails/scheduled`, `/api/emails/sent` | Paginated email records |
+| GET | `/api/emails/campaigns` | Campaign statistics |
+| DELETE | `/api/emails/:id/cancel`, `/api/emails/:id` | Cancel / delete |
+| GET | `/api/emails/rate-limit/:senderEmail` | Global sender quota status |
+| GET | `/api/health` | PostgreSQL and Redis health |
 
-Click the preview URL to see the sent email in Ethereal's web interface!
-
----
-
-## 🔌 API Reference
-
-### Auth
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/auth/google` | Redirect to Google OAuth |
-| GET | `/api/auth/google/callback` | OAuth callback (redirects to frontend) |
-| POST | `/api/auth/google/token` | Exchange Google ID token for JWT (SPA flow) |
-| GET | `/api/auth/me` | Get current user (requires auth) |
-| POST | `/api/auth/logout` | Logout |
-
-### Emails
-
-All email routes require `Authorization: Bearer <token>` header.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/emails/schedule` | Schedule a new email campaign |
-| POST | `/api/emails/parse-csv` | Parse CSV and return email list |
-| GET | `/api/emails/scheduled` | List scheduled/pending emails |
-| GET | `/api/emails/sent` | List sent/failed emails |
-| GET | `/api/emails/campaigns` | List campaigns with stats |
-| DELETE | `/api/emails/:id/cancel` | Cancel a scheduled email |
-| GET | `/api/emails/rate-limit/:email` | Get rate limit status |
-| GET | `/api/health` | Health check |
-
-#### POST /api/emails/schedule
+Example request body (replace the timestamp with a future time):
 
 ```json
 {
-  "sender_email": "me@example.com",
-  "sender_name": "My Name",
-  "subject": "Hello!",
-  "body": "<h1>Hi</h1>",
-  "recipients": ["a@a.com", "b@b.com"],
-  "scheduled_at": "2024-12-01T10:00:00Z",
+  "sender_email": "reviewer@example.com",
+  "subject": "Scheduled demo",
+  "body": "<p>Hello from the scheduler.</p>",
+  "recipients": ["one@example.com", "two@example.com"],
+  "scheduled_at": "2030-01-01T10:00:00Z",
   "delay_between_emails_ms": 2000,
   "hourly_limit": 200
 }
 ```
 
-Also supports `multipart/form-data` with a `recipients_file` field (CSV/TXT).
+## Verification
 
----
+The integration checks use separate local ports and **never use your `.env`
+database, Redis, Google, or Ethereal credentials**. Only external Ethereal
+account discovery is replaced by a localhost SMTP fixture; actual delivery
+uses Nodemailer over TCP, and PostgreSQL, Redis, and BullMQ are real.
 
-## ✅ Features Implemented
+```sh
+docker compose -p email-scheduler-check -f docker-compose.test.yml up -d --wait
+npm --prefix backend test
+npm --prefix frontend run lint
+npm --prefix frontend run build
+docker compose -p email-scheduler-check -f docker-compose.test.yml down
+```
 
-### Backend
-- [x] **Email scheduling** — BullMQ delayed jobs, no cron
-- [x] **Persistence** — BullMQ jobs survive restarts (Redis AOF)
-- [x] **Idempotency** — Redis SET NX prevents duplicate sends
-- [x] **Rate limiting** — Redis atomic INCR per sender per hour, cross-worker safe
-- [x] **Auto-reschedule** — Rate-limited jobs delayed to next hour, never dropped
-- [x] **Worker concurrency** — Configurable via `WORKER_CONCURRENCY`
-- [x] **Min delay between sends** — Configurable `MIN_DELAY_BETWEEN_SENDS_MS`
-- [x] **Ethereal SMTP** — Auto-configured test email with preview URLs
-- [x] **Google OAuth** — Redirect flow + ID token exchange
-- [x] **JWT auth** — Stateless bearer token auth
-- [x] **CSV parsing** — Server-side email extraction from uploaded files
-- [x] **Graceful shutdown** — Worker drains before process exit
-- [x] **DB migrations** — Auto-run on startup
-- [x] **Health check** — DB + Redis status endpoint
+Checks cover transient SMTP retries, hourly deferral and eventual delivery,
+minimum send spacing across campaigns, abrupt backend restart, recovery of a
+missing Redis job, and rejection of Google-account password takeover attempts.
 
-### Frontend
-- [x] **Google OAuth login** — Real OAuth redirect flow
-- [x] **Protected routes** — Auto-redirect to login if unauthenticated
-- [x] **User profile** — Name, email, avatar in header dropdown
-- [x] **Logout** — Clears token and redirects
-- [x] **Dashboard** — Stats cards + tabbed email tables
-- [x] **Compose modal** — CSV upload, manual emails, scheduling config
-- [x] **CSV drag & drop** — Drop CSV file to parse recipients
-- [x] **Scheduled emails table** — With cancel action
-- [x] **Sent emails table** — With Ethereal preview links
-- [x] **Loading states** — Skeleton tables while fetching
-- [x] **Empty states** — With illustrated icons
-- [x] **Auto-refresh** — Every 30 seconds
-- [x] **Error toasts** — react-hot-toast notifications
-- [x] **Pagination** — Page controls on all tables
-- [x] **Dark mode** — Full dark UI with glassmorphism
+## Assumptions, shortcuts, and trade-offs
 
----
+- **SMTP cannot guarantee exactly-once delivery.** If a provider accepts a
+  message and the process crashes before persisting `sent`, recovery may send a
+  duplicate. This implementation favors retrying ambiguous deliveries over
+  silently losing them. A provider with idempotency keys would close that gap.
+- **Fixed UTC-hour windows**, rather than a rolling hour. Deferred jobs can
+  compete at the next boundary; strict ordering across campaigns is not promised.
+- **One sender quota shared across campaigns.** A lower campaign limit applies
+  when that campaign's jobs run; it does not impose a lower quota on other
+  campaigns. Sender email addresses are not verified identities in this test app.
+- **Recovery scans pending rows every 30 seconds.** Suitable for assignment
+  scale; a large deployment would batch the outbox and use a dedicated publisher.
+- **Ethereal is a test provider.** A new account is created per process; it does
+  not deliver to recipients' real inboxes. Preview URLs are stored in PostgreSQL.
+- **Polling instead of WebSockets.** Refresh manually or wait up to 30 seconds.
+  Search and date filters operate on the currently loaded page.
+- **Assignment auth scope.** JWTs live in browser localStorage; logout removes
+  the local token. Password reset, verified local-email ownership, account linking,
+  MFA, and production abuse controls are not implemented.
+- **Persistence requires retained volumes.** Default Redis AOF durability can
+  lose its most recent writes on a host failure; database recovery repairs pending
+  jobs, but losing both data stores is outside the recovery guarantee.
 
-## ⚙️ Configuration Reference
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WORKER_CONCURRENCY` | `5` | BullMQ worker concurrency |
-| `MIN_DELAY_BETWEEN_SENDS_MS` | `2000` | Min ms between email sends |
-| `MAX_EMAILS_PER_HOUR_PER_SENDER` | `200` | Hourly rate limit per sender |
-| `JWT_EXPIRES_IN` | `7d` | JWT token TTL |
-
----
-
-## 🔧 Assumptions & Trade-offs
-
-1. **Idempotency key TTL**: 48 hours. After 48h, Redis memory is reclaimed. Jobs older than 48h that somehow re-run would re-send — acceptable for a scheduler since jobs typically complete quickly.
-
-2. **Rate limit rescheduling**: When the hourly limit is hit, all excess jobs are delayed to `nextHourStart + 1s`. This means they all compete in the next window, not precisely ordered by their original schedule. A more complex priority queue could preserve order across windows, but adds significant complexity.
-
-3. **BullMQ `removeOnComplete`**: Completed jobs are kept in Redis for 7 days (max 500). This allows inspecting the queue but uses some Redis memory. Adjust `removeOnComplete` for production.
-
-4. **Ethereal Email**: Auto-generates a test account per process startup. In production, replace with a real SMTP provider (SendGrid, SES, Postmark, etc.) by changing the `emailSender.ts` transporter.
-
-5. **No WebSockets**: Dashboard auto-refreshes every 30s via polling. For production, add Server-Sent Events or WebSocket support for real-time updates.
-
-6. **CSV parsing**: Uses regex email extraction — works for most formats (comma-separated, newline-separated, CSV with headers). Does not validate deliverability.
+Submission form: https://forms.gle/2qmgDJxV3HZmf9Pt8

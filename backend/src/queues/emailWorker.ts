@@ -1,231 +1,95 @@
-import { Worker, Job, UnrecoverableError } from 'bullmq';
-import { createRedisConnection, getRedisClient } from '../config/redis';
+import { Worker, Job, DelayedError } from 'bullmq';
+import { createRedisConnection } from '../config/redis';
 import { getPool } from '../config/database';
-import { sendEmail, sleep } from '../services/emailSender';
-import { checkAndIncrementRateLimit, getNextHourWindowMs } from '../services/rateLimiter';
-import { scheduleEmailJob, EMAIL_QUEUE_NAME } from './emailQueue';
+import { sendEmail } from '../services/emailSender';
+import { checkAndIncrementRateLimit, decrementRateLimit } from '../services/rateLimiter';
+import { EMAIL_QUEUE_NAME } from './emailQueue';
 import { config } from '../config';
 import { EmailJobData } from '../types';
 
-const IDEMPOTENCY_KEY_PREFIX = 'processed';
-const IDEMPOTENCY_TTL_SECONDS = 60 * 60 * 48; // 48 hours
-
-/**
- * Check if this email job has already been processed (idempotency guard).
- * Uses Redis SET NX (set-if-not-exists) — safe across multiple workers.
- */
-async function markAsProcessed(emailJobId: string): Promise<boolean> {
-  const redis = getRedisClient();
-  const key = `${IDEMPOTENCY_KEY_PREFIX}:${emailJobId}`;
-  // SET key "1" NX EX ttl — returns "OK" if set, null if already existed
-  const result = await redis.set(key, '1', 'EX', IDEMPOTENCY_TTL_SECONDS, 'NX');
-  return result === 'OK'; // true = we own this job, false = duplicate
-}
-
-/**
- * Update email job status in PostgreSQL.
- */
-async function updateJobStatus(
-  emailJobId: string,
-  status: 'processing' | 'sent' | 'failed',
-  extra: {
-    sentAt?: Date;
-    errorMessage?: string;
-    previewUrl?: string;
-    attemptCount?: number;
-  } = {}
-): Promise<void> {
-  const pool = getPool();
-  const client = await pool.connect();
-  try {
-    await client.query(
-      `UPDATE email_jobs
-       SET status = $1,
-           sent_at = $2,
-           error_message = $3,
-           preview_url = $4,
-           attempt_count = COALESCE($5, attempt_count + 1),
-           updated_at = NOW()
-       WHERE id = $6`,
-      [
-        status,
-        extra.sentAt ?? null,
-        extra.errorMessage ?? null,
-        extra.previewUrl ?? null,
-        extra.attemptCount ?? null,
-        emailJobId,
-      ]
-    );
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * The BullMQ email worker processor.
- *
- * Flow for each job:
- * 1. Idempotency check (Redis SET NX) — skip if already processed
- * 2. Rate limit check (Redis INCR atomic) — reschedule to next hour if exceeded
- * 3. Mark job as 'processing' in DB
- * 4. Send email via Ethereal SMTP
- * 5. Mark job as 'sent' in DB + save preview URL
- * 6. Enforce minimum delay between sends
- */
-async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
-  const { emailJobId, senderEmail } = job.data;
-
-  console.log(`⚡ Processing job ${job.id} [emailJobId: ${emailJobId}]`);
-
-  // Step 1: Idempotency check
-  const acquired = await markAsProcessed(emailJobId);
-  if (!acquired) {
-    console.warn(`⚠️  Job ${emailJobId} already processed — skipping (idempotency guard)`);
-    return; // Silently skip duplicate
-  }
-
-  // Step 2: Rate limit check
-  const rateLimitResult = await checkAndIncrementRateLimit(senderEmail, config.MAX_EMAILS_PER_HOUR_PER_SENDER);
-  if (!rateLimitResult.allowed) {
-    const nextWindowMs = rateLimitResult.nextWindowMs!;
-    const delayUntilNextWindow = Math.max(0, nextWindowMs - Date.now()) + 1000; // +1s buffer
-
-    console.warn(
-      `🚦 Rate limit reached for ${senderEmail}. ` +
-        `Rescheduling to next hour window in ${Math.round(delayUntilNextWindow / 1000)}s`
-    );
-
-    // Re-enqueue the job into the next hour window (not dropped, not failed)
-    // We release the idempotency lock so the rescheduled job can claim it
-    const redis = getRedisClient();
-    await redis.del(`${IDEMPOTENCY_KEY_PREFIX}:${emailJobId}`);
-
-    const rescheduleAt = new Date(nextWindowMs);
-    const newBullJobId = `${emailJobId}_retry_${Date.now()}`;
-
-    await scheduleEmailJob(job.data, rescheduleAt, newBullJobId);
-
-    // Update DB scheduled_at to reflect the new time
-    const pool = getPool();
-    const client = await pool.connect();
-    try {
-      await client.query(
-        `UPDATE email_jobs
-         SET scheduled_at = $1, bull_job_id = $2, updated_at = NOW()
-         WHERE id = $3`,
-        [rescheduleAt.toISOString(), newBullJobId, emailJobId]
-      );
-    } finally {
-      client.release();
-    }
-
-    // Throw an UnrecoverableError to stop BullMQ from retrying this specific job instance
-    throw new UnrecoverableError(
-      `Rate limit reached. Rescheduled to ${rescheduleAt.toISOString()}`
-    );
-  }
-
-  // Step 3: Mark as processing in DB
-  await updateJobStatus(emailJobId, 'processing');
-
-  // Step 4: Send the email
-  const result = await sendEmail(job.data);
-
-  // Step 5: Minimum delay between sends (throttling simulation)
-  await sleep(config.MIN_DELAY_BETWEEN_SENDS_MS);
-
-  // Step 6: Mark as sent in DB
-  await updateJobStatus(emailJobId, 'sent', {
-    sentAt: new Date(),
-    previewUrl: result.previewUrl ?? undefined,
-    attemptCount: job.attemptsMade + 1,
-  });
-
-  // Update campaign status if all jobs are done
-  await updateCampaignStatusIfComplete(job.data.campaignId);
-
-  console.log(`✅ Email sent successfully [${emailJobId}] → ${job.data.recipientEmail}`);
-}
-
-/**
- * Check if all jobs in a campaign are complete (sent/failed/cancelled)
- * and update campaign status accordingly.
- */
 async function updateCampaignStatusIfComplete(campaignId: string): Promise<void> {
-  const pool = getPool();
-  const client = await pool.connect();
-  try {
-    const { rows } = await client.query(
-      `SELECT
-         COUNT(*) FILTER (WHERE status IN ('scheduled', 'processing')) as pending,
-         COUNT(*) as total
-       FROM email_jobs WHERE campaign_id = $1`,
-      [campaignId]
-    );
+  await getPool().query(
+    `UPDATE email_campaigns SET status = 'completed', updated_at = NOW()
+     WHERE id = $1 AND NOT EXISTS (
+       SELECT 1 FROM email_jobs WHERE campaign_id = $1 AND status IN ('scheduled', 'processing')
+     )`,
+    [campaignId]
+  );
+}
 
-    const pending = parseInt(rows[0].pending, 10);
-    if (pending === 0) {
-      await client.query(
-        `UPDATE email_campaigns SET status = 'completed', updated_at = NOW() WHERE id = $1`,
-        [campaignId]
-      );
-    }
-  } finally {
-    client.release();
+async function processEmailJob(job: Job<EmailJobData>, token?: string): Promise<void> {
+  const { emailJobId, senderEmail, campaignId } = job.data;
+  const pool = getPool();
+  // BullMQ owns the active-job lock. Durable DB state records successful delivery;
+  // claiming work must never be mistaken for having sent it.
+  const { rows } = await pool.query(
+    `SELECT j.status, c.hourly_limit FROM email_jobs j
+     JOIN email_campaigns c ON c.id = j.campaign_id WHERE j.id = $1`,
+    [emailJobId]
+  );
+  if (!rows.length || ['sent', 'cancelled', 'failed'].includes(rows[0].status)) return;
+
+  const maxPerHour = Math.min(rows[0].hourly_limit, config.MAX_EMAILS_PER_HOUR_PER_SENDER);
+  const quota = await checkAndIncrementRateLimit(senderEmail, maxPerHour);
+  if (!quota.allowed) {
+    const rescheduleAt = new Date(quota.nextWindowMs! + 1000);
+    await pool.query(
+      `UPDATE email_jobs SET status = 'scheduled', scheduled_at = $1, error_message = NULL, updated_at = NOW()
+       WHERE id = $2`,
+      [rescheduleAt, emailJobId]
+    );
+    // Moving the SAME job neither consumes an attempt nor fires 'failed'.
+    await job.moveToDelayed(rescheduleAt.getTime(), token);
+    throw new DelayedError();
   }
+
+  let smtpAccepted = false;
+  try {
+    await pool.query(
+      `UPDATE email_jobs SET status = 'processing', error_message = NULL,
+       attempt_count = $1, updated_at = NOW() WHERE id = $2`,
+      [job.attemptsMade + 1, emailJobId]
+    );
+    const result = await sendEmail(job.data);
+    smtpAccepted = true;
+    await pool.query(
+      `UPDATE email_jobs SET status = 'sent', sent_at = NOW(), preview_url = $1,
+       error_message = NULL, updated_at = NOW() WHERE id = $2`,
+      [result.previewUrl, emailJobId]
+    );
+  } catch (error) {
+    // SMTP acceptance followed by a DB outage remains an ambiguous delivery.
+    if (!smtpAccepted) await decrementRateLimit(senderEmail);
+    const status = job.attemptsMade + 1 >= (job.opts.attempts ?? 1) ? 'failed' : 'scheduled';
+    await pool.query(
+      `UPDATE email_jobs SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3`,
+      [status, error instanceof Error ? error.message : String(error), emailJobId]
+    );
+    if (status === 'failed') await updateCampaignStatusIfComplete(campaignId);
+    throw error;
+  }
+  await updateCampaignStatusIfComplete(campaignId);
+  console.log(`Email sent [${emailJobId}] to ${job.data.recipientEmail}`);
 }
 
 let worker: Worker<EmailJobData> | null = null;
+let workerConnection: ReturnType<typeof createRedisConnection> | null = null;
 
-/**
- * Start the BullMQ worker.
- * Concurrency is configurable via WORKER_CONCURRENCY env var.
- */
 export function startEmailWorker(): Worker<EmailJobData> {
   if (worker) return worker;
-
-  worker = new Worker<EmailJobData>(
-    EMAIL_QUEUE_NAME,
-    processEmailJob,
-    {
-      connection: createRedisConnection(),
-      concurrency: config.WORKER_CONCURRENCY,
-      // BullMQ limiter ensures max throughput across all jobs
-      limiter: {
-        max: config.WORKER_CONCURRENCY,
-        duration: config.MIN_DELAY_BETWEEN_SENDS_MS,
-      },
-    }
-  );
-
-  worker.on('completed', (job: Job<EmailJobData>) => {
-    console.log(`✅ BullMQ job ${job.id} completed`);
+  workerConnection = createRedisConnection();
+  worker = new Worker<EmailJobData>(EMAIL_QUEUE_NAME, processEmailJob, {
+    connection: workerConnection,
+    concurrency: config.WORKER_CONCURRENCY,
+    // Shared across worker instances: increasing concurrency cannot start a burst.
+    ...(config.MIN_DELAY_BETWEEN_SENDS_MS > 0 ? {
+      limiter: { max: 1, duration: config.MIN_DELAY_BETWEEN_SENDS_MS },
+    } : {}),
   });
-
-  worker.on('failed', (job: Job<EmailJobData> | undefined, err: Error) => {
-    console.error(`❌ BullMQ job ${job?.id} failed:`, err.message);
-    if (job) {
-      updateJobStatus(job.data.emailJobId, 'failed', {
-        errorMessage: err.message,
-        attemptCount: job.attemptsMade,
-      }).catch(console.error);
-    }
-  });
-
-  worker.on('error', (err: Error) => {
-    console.error('❌ Worker error:', err.message);
-  });
-
-  worker.on('stalled', (jobId: string) => {
-    console.warn(`⚠️  Job ${jobId} stalled — will be retried`);
-  });
-
-  console.log(
-    `🚀 BullMQ email worker started (concurrency: ${config.WORKER_CONCURRENCY}, ` +
-      `min delay: ${config.MIN_DELAY_BETWEEN_SENDS_MS}ms, ` +
-      `max/hour/sender: ${config.MAX_EMAILS_PER_HOUR_PER_SENDER})`
-  );
-
+  worker.on('failed', (job, error) => console.error(`Email job ${job?.id} attempt failed: ${error.message}`));
+  worker.on('error', error => console.error('Worker error:', error.message));
+  worker.on('stalled', id => console.warn(`Stalled job ${id} will be retried`));
+  console.log(`Email worker started (concurrency ${config.WORKER_CONCURRENCY})`);
   return worker;
 }
 
@@ -233,6 +97,9 @@ export async function stopEmailWorker(): Promise<void> {
   if (worker) {
     await worker.close();
     worker = null;
-    console.log('🛑 BullMQ email worker stopped');
+  }
+  if (workerConnection) {
+    await workerConnection.quit();
+    workerConnection = null;
   }
 }

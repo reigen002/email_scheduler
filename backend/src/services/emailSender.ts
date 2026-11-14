@@ -82,11 +82,3 @@ export async function sendEmail(jobData: EmailJobData): Promise<SendEmailResult>
     previewUrl: typeof previewUrl === 'string' ? previewUrl : null,
   };
 }
-
-/**
- * Sleep for the configured minimum delay between sends.
- * This simulates provider throttling.
- */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
