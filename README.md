@@ -250,6 +250,11 @@ Example request body (replace the timestamp with a future time):
 }
 ```
 
+## Hosting
+
+See [deployment instructions](docs/DEPLOYMENT.md) for Northflank backend and
+Vercel frontend configuration, persistence requirements and live scheduler checks.
+
 ## Verification
 
 The integration checks use separate local ports and **never use your `.env`

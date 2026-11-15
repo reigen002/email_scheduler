@@ -184,8 +184,7 @@ router.post('/logout', authenticateJWT, (_req: Request, res: Response) => {
 
 const BCRYPT_ROUNDS = 12;
 const registrationNameSchema = z.string({
-  required_error: 'Full name is required.',
-  invalid_type_error: 'Full name must be text.',
+  error: issue => issue.input === undefined ? 'Full name is required.' : 'Full name must be text.',
 }).trim()
   .min(2, 'Full name must be between 2 and 100 characters.')
   .max(100, 'Full name must be between 2 and 100 characters.')

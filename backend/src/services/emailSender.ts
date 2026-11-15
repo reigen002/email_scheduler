@@ -9,23 +9,21 @@ interface EtherealAccount {
 }
 
 let testAccount: EtherealAccount | null = null;
-let transporter: nodemailer.Transporter | null = null;
+type EmailTransporter = ReturnType<typeof nodemailer.createTransport>;
+let transporter: EmailTransporter | null = null;
 
 /**
  * Initialize Ethereal Email test account.
  * Ethereal automatically creates a test account for SMTP testing.
  * Preview URLs let you see the sent email in a browser.
  */
-async function getTransporter(): Promise<nodemailer.Transporter> {
+async function getTransporter(): Promise<EmailTransporter> {
   if (transporter) return transporter;
 
   // Create a one-time Ethereal test account
   testAccount = await nodemailer.createTestAccount();
 
-  console.log('📧 Ethereal Email test account created:');
-  console.log(`   User: ${testAccount.user}`);
-  console.log(`   Pass: ${testAccount.pass}`);
-  console.log(`   Web:  ${testAccount.web}`);
+  console.log('📧 Ethereal Email test account created.');
 
   transporter = nodemailer.createTransport({
     host: testAccount.smtp.host,
